@@ -21,6 +21,10 @@ class PromptConfig extends BaseConfig<PromptConfigSchema> {
                 {
                     role: 'assistant',
                     content: '[CHAR] Monika [CONTENT] Hello everyone! Welcome to the Literature Club! I\'m Monika, the president. I\'m so glad you could join us today. We\'re going to have a wonderful time discussing literature and getting to know each other. Sayori, would you like to start by introducing yourself?'
+                },
+                {
+                    role: 'user',
+                    content: '{RST}'
                 }
             ],
         };
