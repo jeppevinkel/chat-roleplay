@@ -11,7 +11,7 @@ RUN npm install
 COPY . .
 
 # Build typescript
-RUN tsc
+RUN npx tsc
 
 FROM node:22 AS production
 LABEL authors="Jeppevinkel"
