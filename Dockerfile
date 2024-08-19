@@ -1,4 +1,4 @@
-FROM node:18-alpine AS build
+FROM node:22-alpine AS build
 
 # Create app directory
 WORKDIR /usr/src/app
@@ -13,7 +13,7 @@ COPY . .
 # Build typescript
 RUN tsc
 
-FROM node:18-apline AS production
+FROM node:22-apline AS production
 LABEL authors="Jeppevinkel"
 
 # Create app directory
