@@ -7,6 +7,7 @@ interface CoreConfigSchema {
     managerBot: IManagerBot;
     model: SupportedModels;
     provider: SupportedProviders;
+    customEndpoint: string | undefined;
     aiToken: string;
     idleIntervalSec: number;
     roleplayChannels: Snowflake[];
@@ -20,6 +21,7 @@ class CoreConfig extends BaseConfig<CoreConfigSchema> {
             },
             model: 'gpt-4o',
             provider: 'openai',
+            customEndpoint: undefined,
             aiToken: '',
             idleIntervalSec: 180,
             roleplayChannels: []

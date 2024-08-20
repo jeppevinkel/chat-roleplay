@@ -16,7 +16,7 @@ async function run() {
     await characterConfig.load();
     // Loaded configs
 
-    const aiManager = new AiManager(coreConfig.get('provider'), coreConfig.get('model'), coreConfig.get('aiToken'));
+    const aiManager = new AiManager(coreConfig.get('provider'), coreConfig.get('customEndpoint'), coreConfig.get('model'), coreConfig.get('aiToken'));
 
     const characters: Map<string, Character> = new Map();
     const channels: Map<Snowflake, Channel> = new Map();
