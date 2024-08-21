@@ -65,6 +65,7 @@ class Channel {
         });
 
         const response = await this.aiManager.getCompletion(this.prompt);
+        console.log('[RESPONSE]', response);
 
         const {char, content} = this.getContent(response!);
 
