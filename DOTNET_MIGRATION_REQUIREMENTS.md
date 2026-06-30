@@ -19,7 +19,7 @@ The application provides:
 3. **Idle Conversation**: Automated conversation continuation when users are inactive
 4. **Configurable Characters**: JSON-based character configuration with personalities
 5. **Channel Management**: Designated Discord channels for roleplay
-6. **Message Parsing**: Custom format for character responses: `[CHAR] Name [CONTENT] Message`
+6. **Character Selection**: Determines which character should respond (legacy: `[CHAR] Name [CONTENT] Message` format, modern: tool/function calling)
 
 ### Architecture
 ```
@@ -468,28 +468,372 @@ services.AddHttpClient<ILlmProvider, OpenAiProvider>()
 - Rate limiting on AI calls
 - Content filtering for inappropriate responses
 
-### 17. Migration Checklist
+### 17. Character Selection Strategy: Legacy Format vs. Tool Calling
+
+#### Current Implementation: `[CHAR] Name [CONTENT] Message`
+The existing TypeScript implementation uses a custom text format where the AI is instructed via system prompt to respond in this specific format:
+- `[CHAR] Monika [CONTENT] Hello everyone!`
+- Requires regex parsing to extract character name and message content
+- Works with any LLM but relies on prompt adherence
+- Can be error-prone if the model doesn't follow the format strictly
+
+#### Modern Approach: Tool/Function Calling (RECOMMENDED for .NET Migration)
+
+**Why Tool Calling is Superior:**
+
+1. **Native LLM Support**: Modern models (GPT-4, GPT-4o, Claude 3+, Llama 3.1+) have built-in tool/function calling
+2. **Structured Output**: Guaranteed JSON schema adherence, no regex parsing needed
+3. **Type Safety**: Direct deserialization to C# models
+4. **Reliability**: LLMs are trained specifically for function calling, more consistent than prompt-based formatting
+5. **Extensibility**: Easy to add more functions (e.g., character actions, emotions, scene changes)
+6. **Better Error Handling**: API returns structured errors if function format is invalid
+
+**Implementation Example:**
+
+```csharp
+// Define the function/tool for OpenAI API
+public class CharacterResponseFunction
+{
+    public string Type { get; } = "function";
+    public FunctionDefinition Function { get; set; }
+}
+
+public class FunctionDefinition
+{
+    public string Name { get; init; } = "respond_as_character";
+    public string Description { get; init; } = "Respond as one of the roleplay characters";
+    public JsonElement Parameters { get; init; } // JSON Schema
+}
+
+// JSON Schema for the function
+{
+    "type": "object",
+    "properties": {
+        "character_name": {
+            "type": "string",
+            "enum": ["Monika", "Sayori", "Yuri", "Natsuki"],
+            "description": "The character who is speaking"
+        },
+        "message": {
+            "type": "string",
+            "description": "What the character says"
+        },
+        "emotion": {
+            "type": "string",
+            "enum": ["happy", "sad", "excited", "nervous", "angry", "neutral"],
+            "description": "The character's emotional state (optional)"
+        }
+    },
+    "required": ["character_name", "message"]
+}
+```
+
+**OpenAI API Request with Tool Calling:**
+```csharp
+{
+    "model": "gpt-4o",
+    "messages": [...],
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "respond_as_character",
+                "description": "Respond as one of the roleplay characters",
+                "parameters": { /* schema above */ }
+            }
+        }
+    ],
+    "tool_choice": "required" // Force the model to use the function
+}
+```
+
+**API Response:**
+```csharp
+{
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_abc123",
+                "type": "function",
+                "function": {
+                    "name": "respond_as_character",
+                    "arguments": "{\"character_name\":\"Monika\",\"message\":\"Hello everyone! Welcome to the Literature Club!\"}"
+                }
+            }]
+        }
+    }]
+}
+```
+
+**Parsing in .NET:**
+```csharp
+public record CharacterResponse
+{
+    [JsonPropertyName("character_name")]
+    public string CharacterName { get; init; } = string.Empty;
+    
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+    
+    [JsonPropertyName("emotion")]
+    public string? Emotion { get; init; }
+}
+
+// Simple deserialization
+var response = JsonSerializer.Deserialize<CharacterResponse>(toolCall.Function.Arguments);
+```
+
+#### Comparison Table
+
+| Aspect | Legacy `[CHAR]` Format | Tool/Function Calling |
+|--------|----------------------|----------------------|
+| **Parsing** | Regex, error-prone | Native JSON deserialization |
+| **Reliability** | Depends on prompt adherence | Guaranteed schema compliance |
+| **Type Safety** | String manipulation | Strongly-typed C# objects |
+| **LLM Support** | All models | GPT-4+, Claude 3+, Llama 3.1+ |
+| **Extensibility** | Requires prompt changes | Add new fields to schema |
+| **Error Handling** | Try-catch on regex | Structured API errors |
+| **Performance** | Slower (regex) | Faster (direct deserialize) |
+| **Future-Proof** | Outdated approach | Industry standard |
+
+#### Ollama Support for Tool Calling
+
+Ollama (as of 2024+) supports tool/function calling for compatible models:
+- Llama 3.1 and newer
+- Mistral models
+- Other recent models with function calling training
+
+**Ollama API Request:**
+```csharp
+{
+    "model": "llama3.1",
+    "messages": [...],
+    "tools": [ /* same format as OpenAI */ ],
+    "stream": false
+}
+```
+
+#### Recommendation for .NET Migration
+
+**Use Tool/Function Calling as the primary implementation:**
+
+1. **Default**: Implement tool calling for OpenAI and compatible Ollama models
+2. **Fallback**: Keep legacy `[CHAR]` format as a fallback for older models
+3. **Configuration**: Allow users to choose via config setting
+4. **Provider Detection**: Auto-detect if model supports tool calling
+
+**Implementation Strategy:**
+```csharp
+public interface ICharacterSelector
+{
+    Task<CharacterResponse> SelectCharacterAsync(List<ChatMessage> messages, CancellationToken cancellationToken);
+}
+
+public class ToolCallingCharacterSelector : ICharacterSelector
+{
+    // Modern approach - recommended
+}
+
+public class LegacyFormatCharacterSelector : ICharacterSelector
+{
+    // Fallback for older models
+}
+
+// In configuration
+public record AiProviderConfig
+{
+    public bool UseToolCalling { get; init; } = true; // Default to modern approach
+    public string Model { get; init; } = "gpt-4o";
+}
+```
+
+#### Migration Decision
+
+**STRONGLY RECOMMENDED**: Use tool/function calling for the .NET implementation unless:
+- You need to support very old models (pre-2024)
+- You're using a local model that doesn't support function calling
+- You have a specific reason to preserve the exact legacy behavior
+
+The tool calling approach is:
+- More reliable
+- More maintainable
+- More extensible
+- Better aligned with modern LLM best practices
+- Better suited for .NET's strong typing
+
+You can still support the legacy format as a fallback option, but the primary implementation should use tool calling.
+
+#### Practical Implementation in .NET
+
+**Models for Tool Calling:**
+```csharp
+// Request models
+public record ToolDefinition
+{
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "function";
+    
+    [JsonPropertyName("function")]
+    public FunctionDefinition Function { get; init; } = new();
+}
+
+public record FunctionDefinition
+{
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+    
+    [JsonPropertyName("description")]
+    public string Description { get; init; } = string.Empty;
+    
+    [JsonPropertyName("parameters")]
+    public object Parameters { get; init; } = new();
+}
+
+// Response models
+public record ToolCall
+{
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+    
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "function";
+    
+    [JsonPropertyName("function")]
+    public FunctionCall Function { get; init; } = new();
+}
+
+public record FunctionCall
+{
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+    
+    [JsonPropertyName("arguments")]
+    public string Arguments { get; init; } = string.Empty;
+}
+
+// Character response model
+public record CharacterResponse
+{
+    [JsonPropertyName("character_name")]
+    public string CharacterName { get; init; } = string.Empty;
+    
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+    
+    [JsonPropertyName("emotion")]
+    public string? Emotion { get; init; }
+}
+```
+
+**Service Implementation:**
+```csharp
+public class ToolCallingAiService : IAiService
+{
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<ToolCallingAiService> _logger;
+    private readonly List<Character> _characters;
+
+    public async Task<CharacterResponse?> GetCharacterResponseAsync(
+        List<ChatMessage> messages, 
+        CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient();
+        
+        // Build the tool definition
+        var tool = new ToolDefinition
+        {
+            Function = new FunctionDefinition
+            {
+                Name = "respond_as_character",
+                Description = "Respond as one of the roleplay characters",
+                Parameters = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        character_name = new
+                        {
+                            type = "string",
+                            @enum = _characters.Select(c => c.Name).ToArray(),
+                            description = "The character who is speaking"
+                        },
+                        message = new
+                        {
+                            type = "string",
+                            description = "What the character says"
+                        },
+                        emotion = new
+                        {
+                            type = "string",
+                            @enum = new[] { "happy", "sad", "excited", "nervous", "angry", "neutral" },
+                            description = "The character's emotional state"
+                        }
+                    },
+                    required = new[] { "character_name", "message" }
+                }
+            }
+        };
+
+        var request = new
+        {
+            model = "gpt-4o",
+            messages = messages,
+            tools = new[] { tool },
+            tool_choice = "required" // Force model to use the function
+        };
+
+        var response = await client.PostAsJsonAsync(
+            "https://api.openai.com/v1/chat/completions",
+            request,
+            cancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        
+        var result = await response.Content.ReadFromJsonAsync<OpenAiResponse>(cancellationToken);
+        var toolCall = result?.Choices?[0]?.Message?.ToolCalls?[0];
+        
+        if (toolCall?.Function?.Arguments != null)
+        {
+            return JsonSerializer.Deserialize<CharacterResponse>(toolCall.Function.Arguments);
+        }
+
+        return null;
+    }
+}
+```
+
+**Benefits in Practice:**
+1. **No Regex Parsing**: Direct JSON to C# object conversion
+2. **Validation**: The model is constrained to valid character names via the enum
+3. **Extensibility**: Adding emotion/mood/action is trivial - just add a property
+4. **Error Recovery**: If the tool call fails, you get a structured error, not garbled text
+5. **Testing**: Easy to mock and unit test with strongly-typed objects
+
+### 18. Migration Checklist
 
 - [ ] Create .NET 10 console application project
 - [ ] Install required NuGet packages (DSharpPlus, etc.)
 - [ ] Implement configuration models and loading
 - [ ] Implement AI provider interfaces (OpenAI, Ollama)
+- [ ] **Implement tool/function calling for character selection (recommended)**
+- [ ] Implement legacy [CHAR]/[CONTENT] parser as fallback (optional)
 - [ ] Implement character service with multiple Discord clients
 - [ ] Implement channel service with conversation management
 - [ ] Implement manager bot service with message handling
 - [ ] Add idle conversation timer functionality
-- [ ] Implement message parsing for [CHAR]/[CONTENT] format
 - [ ] Add logging throughout
 - [ ] Create Dockerfile and docker-compose.yml
 - [ ] Test with single character
 - [ ] Test with multiple characters
 - [ ] Test idle conversation feature
-- [ ] Test with OpenAI API
-- [ ] Test with Ollama
+- [ ] Test with OpenAI API (tool calling)
+- [ ] Test with Ollama (tool calling if supported, fallback otherwise)
 - [ ] Document setup and configuration
 - [ ] Create CI/CD pipeline (.github/workflows)
 
-### 18. Advantages of .NET 10 Implementation
+### 19. Advantages of .NET 10 Implementation
 
 1. **Performance**: .NET 10 offers superior performance compared to Node.js
 2. **Type Safety**: Strong typing reduces runtime errors
@@ -500,15 +844,16 @@ services.AddHttpClient<ILlmProvider, OpenAiProvider>()
 7. **Deployment**: Smaller Docker images with AOT compilation options
 8. **Maintenance**: Strong tooling (Visual Studio, Rider, VS Code)
 
-### 19. Potential Challenges
+### 20. Potential Challenges
 
 1. **Discord Library Differences**: discord.js and DSharpPlus have different APIs
 2. **Multiple Client Management**: Managing multiple Discord clients in .NET requires careful resource management
 3. **JSON Configuration**: Ensuring compatibility with existing config format
 4. **Event Handling**: Different event models between Node.js and .NET
 5. **HTTP Client Configuration**: Setting up IHttpClientFactory correctly
+6. **Tool Calling API Differences**: OpenAI and Ollama may have slightly different tool calling implementations
 
-### 20. Estimated Development Time
+### 21. Estimated Development Time
 
 - **Basic Implementation**: 16-24 hours
 - **Testing & Debugging**: 8-12 hours
