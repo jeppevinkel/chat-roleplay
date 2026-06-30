@@ -21,7 +21,7 @@ The application provides:
 5. **Channel Management**: Designated Discord channels for roleplay
 6. **Character Selection**: Determines which character should respond (legacy: `[CHAR] Name [CONTENT] Message` format, modern: tool/function calling)
 
-### Architecture
+### Architecture (Current - Individual Bots)
 ```
 Main Bot (Manager)
 ├── Listens to messages in roleplay channels
@@ -33,6 +33,8 @@ Character Bots (1-N)
 ├── Send messages as their character
 └── Reply to messages in roleplay channels
 ```
+
+**⚠️ NOTE**: This architecture uses individual bot accounts per character, which has significant limitations (see Section 18 for recommended webhook-based alternative).
 
 ## .NET 10 Migration Requirements
 
@@ -98,23 +100,24 @@ ChatRoleplay/
 ├── Program.cs                          # Entry point
 ├── appsettings.json                    # Configuration
 ├── Models/
-│   ├── Character.cs                    # Character model
+│   ├── Character.cs                    # Character model (with AvatarUrl, no BotToken)
 │   ├── CoreConfig.cs                   # Core configuration model
 │   ├── PromptConfig.cs                 # Prompt configuration model
 │   ├── CharacterConfig.cs              # Character configuration model
-│   └── Message.cs                      # Message model
+│   ├── Message.cs                      # Message model
+│   └── CharacterResponse.cs            # AI response model (tool calling)
 ├── Services/
 │   ├── IConfigService.cs               # Configuration service interface
 │   ├── ConfigService.cs                # Configuration service implementation
 │   ├── IAiService.cs                   # AI service interface
 │   ├── AiService.cs                    # AI service implementation (OpenAI/Ollama)
-│   ├── CharacterService.cs             # Character bot management
+│   ├── WebhookService.cs               # Webhook management and character messaging
 │   ├── ChannelService.cs               # Channel/conversation management
 │   └── ManagerBotService.cs            # Main bot service
 ├── Providers/
 │   ├── ILlmProvider.cs                 # LLM provider interface
-│   ├── OpenAiProvider.cs               # OpenAI implementation
-│   └── OllamaProvider.cs               # Ollama implementation
+│   ├── OpenAiProvider.cs               # OpenAI implementation with tool calling
+│   └── OllamaProvider.cs               # Ollama implementation with tool calling
 └── Data/                               # Runtime config storage
     ├── core-config.json
     ├── prompt-config.json
@@ -133,7 +136,9 @@ public record Character
     public string Description { get; init; } = string.Empty;
     public string LongDescription { get; init; } = string.Empty;
     public string Personality { get; init; } = string.Empty;
-    public string BotToken { get; init; } = string.Empty;
+    
+    // For webhooks - no bot token needed!
+    public string? AvatarUrl { get; init; }
 }
 ```
 
@@ -183,12 +188,13 @@ public interface ILlmProvider
 }
 ```
 
-**CharacterService.cs**
+**WebhookService.cs**
 ```csharp
-public class CharacterService
+public class WebhookService
 {
-    // Manages multiple DiscordClient instances (one per character)
-    // Handles login and message sending for each character
+    // Manages webhook creation and caching per channel
+    // Sends messages as characters with custom name/avatar
+    // No need for multiple Discord clients!
 }
 ```
 
@@ -267,13 +273,21 @@ var intents = DiscordIntents.Guilds |
 - **Character Bots**: Send messages as characters (1 client per character)
 - Each needs separate login and event handling
 
-#### Message Flow
+#### Message Flow (Legacy Multi-Bot)
 1. Manager bot receives message in roleplay channel
 2. Add message to conversation history
 3. Send prompt to AI service
 4. Parse response for `[CHAR]` and `[CONTENT]`
 5. Find matching character bot
 6. Character bot replies to message
+
+#### Message Flow (Recommended Webhook)
+1. Manager bot receives message in roleplay channel
+2. Add message to conversation history
+3. Send prompt to AI service with tool calling
+4. AI returns structured response: `{"character_name": "Monika", "message": "Hello!"}`
+5. Look up character by name
+6. Send via webhook with character's name and avatar
 
 ### 9. Asynchronous Programming
 
@@ -339,7 +353,7 @@ var builder = Host.CreateDefaultBuilder(args)
         
         // Services
         services.AddSingleton<IAiService, AiService>();
-        services.AddSingleton<CharacterService>();
+        services.AddSingleton<WebhookService>();  // Webhook-based character messaging
         services.AddSingleton<ChannelService>();
         
         // Background services
@@ -811,7 +825,241 @@ public class ToolCallingAiService : IAiService
 4. **Error Recovery**: If the tool call fails, you get a structured error, not garbled text
 5. **Testing**: Easy to mock and unit test with strongly-typed objects
 
-### 18. Migration Checklist
+### 18. Architecture Decision: Individual Bots vs. Webhooks (CRITICAL)
+
+#### Current Implementation Issues
+The existing TypeScript implementation uses **individual Discord bot accounts for each character**. This approach has several significant problems:
+
+**Problems with Individual Bot Accounts:**
+1. **Discord TOS Violation Risk**: Using multiple bot accounts that are controlled by a single system could violate Discord's Terms of Service, especially if they're automated to respond based on a central system
+2. **Token Management**: Requires managing multiple bot tokens (one per character)
+3. **Security**: Multiple tokens = larger attack surface
+4. **Rate Limits**: Each bot has its own rate limits, but coordination is complex
+5. **Maintenance Overhead**: Managing N bot applications in Discord Developer Portal
+6. **Limited Flexibility**: Can't easily change character avatars/names dynamically
+7. **Bot Presence**: All character bots must be online simultaneously, cluttering member lists
+
+#### Recommended Solution: Discord Webhooks
+
+**Use a single bot with webhooks for character messages.**
+
+**Advantages of Webhooks:**
+1. ✅ **TOS Compliant**: Fully supported Discord API feature
+2. ✅ **Dynamic Identity**: Set name and avatar per message
+3. ✅ **Single Token**: Only the manager bot token needed
+4. ✅ **Easier Management**: One bot application in Discord Developer Portal
+5. ✅ **Better Security**: Fewer tokens to secure
+6. ✅ **Cleaner Server**: No clutter from multiple bot accounts in member list
+7. ✅ **Flexible**: Can add/remove characters without creating new bots
+8. ✅ **Programmatic Control**: Create/delete webhooks via API
+
+**How Webhooks Work:**
+```csharp
+// Create a webhook for a channel (once, cache the URL)
+var webhook = await channel.CreateWebhookAsync("Roleplay Characters");
+
+// Send a message as any character
+await webhook.ExecuteAsync(new DiscordWebhookBuilder()
+    .WithContent("Hello everyone! Welcome to the Literature Club!")
+    .WithUsername("Monika")  // Character name
+    .WithAvatarUrl("https://example.com/monika.png")); // Character avatar
+```
+
+**Implementation Architecture:**
+```
+Main Bot (Manager)
+├── Listens to messages in roleplay channels
+├── Manages AI prompts and responses
+├── Determines which character should respond
+└── Executes webhook with character name/avatar
+
+Webhooks (per channel)
+├── Created/cached by bot on startup
+├── Used to send messages with custom name/avatar
+└── No separate bot accounts needed
+```
+
+#### Webhook Implementation in .NET
+
+**Service Structure:**
+```csharp
+public class WebhookService
+{
+    private readonly ILogger<WebhookService> _logger;
+    private readonly ConcurrentDictionary<ulong, DiscordWebhook> _webhookCache = new();
+
+    public async Task<DiscordWebhook> GetOrCreateWebhookAsync(
+        DiscordChannel channel, 
+        CancellationToken cancellationToken = default)
+    {
+        if (_webhookCache.TryGetValue(channel.Id, out var cached))
+            return cached;
+
+        // Check if webhook already exists
+        var webhooks = await channel.GetWebhooksAsync();
+        var webhook = webhooks.FirstOrDefault(w => w.Name == "Roleplay Characters");
+        
+        if (webhook == null)
+        {
+            webhook = await channel.CreateWebhookAsync("Roleplay Characters", 
+                reason: "For roleplay character messages");
+            _logger.LogInformation("Created webhook for channel {ChannelName}", channel.Name);
+        }
+
+        _webhookCache[channel.Id] = webhook;
+        return webhook;
+    }
+
+    public async Task SendAsCharacterAsync(
+        DiscordChannel channel,
+        Character character,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        var webhook = await GetOrCreateWebhookAsync(channel, cancellationToken);
+        
+        var builder = new DiscordWebhookBuilder()
+            .WithContent(message)
+            .WithUsername(character.Name);
+        
+        if (!string.IsNullOrEmpty(character.AvatarUrl))
+        {
+            builder.WithAvatarUrl(character.AvatarUrl);
+        }
+
+        await webhook.ExecuteAsync(builder);
+        _logger.LogInformation("Sent message as {Character} in {Channel}", 
+            character.Name, channel.Name);
+    }
+}
+```
+
+**Character Model Update:**
+```csharp
+public record Character
+{
+    public string Name { get; init; } = string.Empty;
+    public string Description { get; init; } = string.Empty;
+    public string LongDescription { get; init; } = string.Empty;
+    public string Personality { get; init; } = string.Empty;
+    
+    // No bot token needed!
+    // Just avatar URL for webhook
+    public string? AvatarUrl { get; init; }
+}
+```
+
+**Configuration Update:**
+```json
+{
+  "characters": [
+    {
+      "name": "Monika",
+      "description": "President of the Literature Club",
+      "personality": "Confident, self-aware, caring but with a darker side",
+      "avatarUrl": "https://example.com/avatars/monika.png"
+    },
+    {
+      "name": "Sayori",
+      "description": "Vice President and childhood friend",
+      "personality": "Cheerful, clumsy, struggles with depression",
+      "avatarUrl": "https://example.com/avatars/sayori.png"
+    }
+  ]
+}
+```
+
+#### Message Flow with Webhooks
+1. Manager bot receives message in roleplay channel
+2. Add message to conversation history
+3. Send prompt to AI service with tool calling
+4. AI returns: `{"character_name": "Monika", "message": "Hello!", "emotion": "happy"}`
+5. Look up character by name
+6. Send via webhook with character's name and avatar
+7. Done! (No need to coordinate separate bot clients)
+
+#### Webhook Limitations & Workarounds
+
+**What Webhooks CAN'T Do:**
+- Can't add reactions as the character (bot can react instead)
+- Can't edit previous webhook messages easily (need to store message IDs)
+- Can't show "typing" indicator as the character
+- Don't appear in member list
+- Can't have custom status/presence
+
+**Workarounds:**
+- **Reactions**: Have the manager bot add reactions if needed
+- **Typing Indicator**: Skip it, or have manager bot type (minor immersion loss)
+- **Message Editing**: Store webhook message IDs if editing is needed
+- **Presence**: Not needed for this use case (characters only exist when speaking)
+
+#### Migration Recommendation
+
+**For the .NET migration, use webhooks exclusively:**
+
+1. **Remove** all individual character bot token requirements
+2. **Implement** webhook-based character messaging
+3. **Simplify** configuration (one bot token + character avatars)
+4. **Add** webhook caching for performance
+5. **Keep** the AI character selection logic (tool calling)
+
+**Benefits for .NET Implementation:**
+- Simpler architecture (one `DiscordClient` instead of N+1)
+- Fewer resources (one gateway connection vs. N+1)
+- Better performance (no coordination between bots)
+- Easier testing (mock one webhook service vs. N bots)
+- More maintainable (less moving parts)
+
+#### Code Comparison
+
+**Before (Multiple Bots):**
+```csharp
+public class CharacterService
+{
+    private Dictionary<string, DiscordClient> _characterBots;
+    
+    public async Task SendMessageAsync(string characterName, string message)
+    {
+        var bot = _characterBots[characterName];
+        await bot.SendMessageAsync(channelId, message);
+    }
+}
+```
+
+**After (Webhooks):**
+```csharp
+public class WebhookService
+{
+    private ConcurrentDictionary<ulong, DiscordWebhook> _webhooks;
+    
+    public async Task SendMessageAsync(DiscordChannel channel, Character character, string message)
+    {
+        var webhook = await GetOrCreateWebhookAsync(channel);
+        await webhook.ExecuteAsync(new DiscordWebhookBuilder()
+            .WithContent(message)
+            .WithUsername(character.Name)
+            .WithAvatarUrl(character.AvatarUrl));
+    }
+}
+```
+
+**Result**: Simpler, more reliable, fully TOS-compliant.
+
+#### Required DSharpPlus Features
+- `DiscordChannel.CreateWebhookAsync()` - Create webhooks
+- `DiscordChannel.GetWebhooksAsync()` - List existing webhooks
+- `DiscordWebhook.ExecuteAsync()` - Send messages via webhook
+- `DiscordWebhookBuilder` - Build webhook messages with custom name/avatar
+
+All of these are well-supported in DSharpPlus v5.x and Discord.Net v3.x.
+
+#### Conclusion
+
+**STRONGLY RECOMMENDED**: Use webhooks instead of individual bot accounts.
+
+This is the modern, correct way to implement character-based messaging in Discord. The .NET migration provides a perfect opportunity to fix this architectural issue and create a more robust, maintainable, and TOS-compliant application.
+
+### 19. Migration Checklist
 
 - [ ] Create .NET 10 console application project
 - [ ] Install required NuGet packages (DSharpPlus, etc.)
@@ -819,21 +1067,23 @@ public class ToolCallingAiService : IAiService
 - [ ] Implement AI provider interfaces (OpenAI, Ollama)
 - [ ] **Implement tool/function calling for character selection (recommended)**
 - [ ] Implement legacy [CHAR]/[CONTENT] parser as fallback (optional)
-- [ ] Implement character service with multiple Discord clients
+- [ ] **Implement webhook service for character messaging (CRITICAL - replaces multiple bots)**
+- [ ] Implement webhook caching per channel
 - [ ] Implement channel service with conversation management
 - [ ] Implement manager bot service with message handling
 - [ ] Add idle conversation timer functionality
 - [ ] Add logging throughout
 - [ ] Create Dockerfile and docker-compose.yml
-- [ ] Test with single character
-- [ ] Test with multiple characters
+- [ ] Test webhook creation and message sending
+- [ ] Test with multiple characters via webhooks
+- [ ] Test character avatar/name display
 - [ ] Test idle conversation feature
 - [ ] Test with OpenAI API (tool calling)
 - [ ] Test with Ollama (tool calling if supported, fallback otherwise)
 - [ ] Document setup and configuration
 - [ ] Create CI/CD pipeline (.github/workflows)
 
-### 19. Advantages of .NET 10 Implementation
+### 20. Advantages of .NET 10 Implementation
 
 1. **Performance**: .NET 10 offers superior performance compared to Node.js
 2. **Type Safety**: Strong typing reduces runtime errors
@@ -844,34 +1094,47 @@ public class ToolCallingAiService : IAiService
 7. **Deployment**: Smaller Docker images with AOT compilation options
 8. **Maintenance**: Strong tooling (Visual Studio, Rider, VS Code)
 
-### 20. Potential Challenges
+### 21. Potential Challenges
 
 1. **Discord Library Differences**: discord.js and DSharpPlus have different APIs
-2. **Multiple Client Management**: Managing multiple Discord clients in .NET requires careful resource management
+2. **~~Multiple Client Management~~ SOLVED**: Using webhooks eliminates the need for multiple Discord clients
 3. **JSON Configuration**: Ensuring compatibility with existing config format
 4. **Event Handling**: Different event models between Node.js and .NET
 5. **HTTP Client Configuration**: Setting up IHttpClientFactory correctly
 6. **Tool Calling API Differences**: OpenAI and Ollama may have slightly different tool calling implementations
+7. **Webhook Management**: Caching webhooks and handling webhook recreation if deleted
 
-### 21. Estimated Development Time
+### 22. Estimated Development Time
 
-- **Basic Implementation**: 16-24 hours
-- **Testing & Debugging**: 8-12 hours
+**With Webhook Architecture (Recommended):**
+- **Basic Implementation**: 12-18 hours (simpler than multi-bot approach)
+- **Webhook Service**: 2-3 hours
+- **Testing & Debugging**: 6-10 hours
 - **Documentation**: 4-6 hours
 - **Docker Setup**: 2-4 hours
-- **Total**: ~30-46 hours for a complete migration
+- **Total**: ~26-41 hours for a complete migration
+
+**Time Savings from Webhooks**: ~4-5 hours saved by not managing multiple Discord clients
 
 ## Conclusion
 
 Migrating this Discord roleplay bot from TypeScript/Node.js to .NET 10 is highly feasible and would benefit from .NET's performance, type safety, and robust ecosystem. The main requirements are:
 
 1. **DSharpPlus or Discord.Net** for Discord integration
-2. **IHttpClientFactory** for AI API calls
-3. **System.Text.Json** for configuration
-4. **Microsoft.Extensions.Hosting** for application lifecycle
-5. Proper multi-client management for character bots
+2. **Discord Webhooks** for character messaging (single bot, multiple character identities)
+3. **Tool/Function Calling** for reliable character selection (instead of regex parsing)
+4. **IHttpClientFactory** for AI API calls (OpenAI/Ollama)
+5. **System.Text.Json** for configuration
+6. **Microsoft.Extensions.Hosting** for application lifecycle
 
-The architecture would remain largely the same, with services handling different aspects (AI, Characters, Channels, Manager Bot), but leveraging .NET's built-in dependency injection, configuration, and logging frameworks for a more maintainable codebase.
+### Key Architectural Improvements in .NET Version:
+
+1. **Webhooks Instead of Multiple Bots**: Simpler, TOS-compliant, easier to maintain
+2. **Tool Calling Instead of Regex**: More reliable character selection with structured output
+3. **Strong Typing**: C# models for all configuration and responses
+4. **Built-in DI/Logging**: Leveraging .NET's robust infrastructure
+
+The .NET implementation would be **simpler and more maintainable** than the TypeScript version due to webhooks replacing multi-bot coordination and tool calling replacing regex parsing.
 
 ## References
 
