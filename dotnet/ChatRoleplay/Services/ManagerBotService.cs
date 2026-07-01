@@ -7,8 +7,9 @@ using Microsoft.Extensions.Logging;
 namespace ChatRoleplay.Services;
 
 /// <summary>
-/// The main hosted service that runs the manager Discord bot and orchestrates
-/// character bots and channel services.
+/// The main hosted service that connects the manager Discord bot and orchestrates
+/// character bots and per-channel conversation services.
+/// Uses the DSharpPlus 5.x builder API.
 /// </summary>
 public class ManagerBotService : BackgroundService
 {
@@ -49,11 +50,12 @@ public class ManagerBotService : BackgroundService
 
         if (string.IsNullOrWhiteSpace(coreConfig.ManagerBot.BotToken))
         {
-            _logger.LogError("Manager bot token is not configured. Edit data/core-config.json and restart.");
+            _logger.LogError(
+                "Manager bot token is not configured. Edit data/core-config.json and restart.");
             return;
         }
 
-        // ── 2. Start character bots ───────────────────────────────────────
+        // ── 2. Start all character bots ───────────────────────────────────
         await _characterBotService.StartAllAsync(characterConfig.Characters, stoppingToken);
 
         // ── 3. Create the AI service ──────────────────────────────────────
@@ -62,65 +64,71 @@ public class ManagerBotService : BackgroundService
             _loggerFactory.CreateLogger<AiService>(),
             coreConfig);
 
-        // ── 4. Connect the manager bot ────────────────────────────────────
-        var config = new DiscordConfiguration
+        // ── 4. Build and connect the manager bot (DSharpPlus 5.x builder) ─
+        //  MessageContent is a privileged intent – must be enabled in the Developer Portal.
+        var intents = DiscordIntents.Guilds
+                    | DiscordIntents.GuildMessages
+                    | DiscordIntents.MessageContents;
+
+        var clientBuilder = DiscordClientBuilder.CreateDefault(
+            coreConfig.ManagerBot.BotToken, intents);
+
+        // Wire up events before building so DSharpPlus 5.x can register them properly.
+        clientBuilder.ConfigureEventHandlers(b =>
         {
-            Token = coreConfig.ManagerBot.BotToken,
-            TokenType = TokenType.Bot,
-            Intents = DiscordIntents.Guilds | DiscordIntents.GuildMessages | DiscordIntents.MessageContents,
-            MinimumLogLevel = Microsoft.Extensions.Logging.LogLevel.Warning,
-        };
-
-        _managerClient = new DiscordClient(config);
-
-        _managerClient.Ready += (_, _) =>
-        {
-            _logger.LogInformation("Manager bot connected");
-
-            // Build channel services once the manager is ready
-            var formattedPrompt = promptConfig.GetFormattedTemplate(characterConfig.Characters);
-
-            foreach (var channelId in coreConfig.RoleplayChannels)
+            b.HandleSessionCreated(_ =>
             {
-                var channelService = new ChannelService(
-                    channelId,
-                    formattedPrompt.Select(m => new Models.ChatMessage(m.Role, m.Content)).ToList(),
-                    aiService,
-                    _characterBotService,
-                    characterConfig.Characters,
-                    coreConfig,
-                    _managerClient,
-                    _channelLogger);
+                _logger.LogInformation("Manager bot connected");
 
-                _channels[channelId] = channelService;
-                channelService.StartIdleTimer();
-                _logger.LogInformation("Watching roleplay channel: {ChannelId}", channelId);
-            }
+                var formattedPrompt = promptConfig.GetFormattedTemplate(characterConfig.Characters);
 
-            if (coreConfig.RoleplayChannels.Count == 0)
-                _logger.LogWarning("No roleplay channels configured. Add channel IDs to data/core-config.json.");
+                foreach (var channelId in coreConfig.RoleplayChannels)
+                {
+                    var channelService = new ChannelService(
+                        channelId,
+                        formattedPrompt
+                            .Select(m => new Models.ChatMessage(m.Role, m.Content))
+                            .ToList(),
+                        aiService,
+                        _characterBotService,
+                        characterConfig.Characters,
+                        coreConfig,
+                        _managerClient!,
+                        _channelLogger);
 
-            return Task.CompletedTask;
-        };
+                    _channels[channelId] = channelService;
+                    channelService.StartIdleTimer();
+                    _logger.LogInformation("Watching roleplay channel: {ChannelId}", channelId);
+                }
 
-        _managerClient.MessageCreated += OnMessageCreatedAsync;
+                if (coreConfig.RoleplayChannels.Count == 0)
+                    _logger.LogWarning(
+                        "No roleplay channels configured. " +
+                        "Add channel IDs to data/core-config.json.");
 
+                return Task.CompletedTask;
+            });
+
+            b.HandleMessageCreated(OnMessageCreatedAsync);
+        });
+
+        _managerClient = clientBuilder.Build();
         await _managerClient.ConnectAsync();
 
-        // Keep running until cancellation is requested
+        // Keep running until the host signals shutdown.
         try
         {
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException)
         {
-            // Normal shutdown
+            // Normal shutdown – swallow the exception.
         }
     }
 
-    private async Task OnMessageCreatedAsync(DiscordClient sender, MessageCreateEventArgs e)
+    private async Task OnMessageCreatedAsync(MessageCreatedEventArgs e)
     {
-        // Ignore all bots (manager + character bots)
+        // Ignore all bot accounts (manager bot + character bots).
         if (e.Author.IsBot) return;
 
         if (!_channels.TryGetValue(e.Channel.Id, out var channel)) return;
@@ -131,7 +139,8 @@ public class ManagerBotService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled error processing message in channel {ChannelId}", e.Channel.Id);
+            _logger.LogError(ex,
+                "Unhandled error processing message in channel {ChannelId}", e.Channel.Id);
         }
     }
 
@@ -142,7 +151,9 @@ public class ManagerBotService : BackgroundService
         foreach (var channel in _channels.Values)
             await channel.DisposeAsync();
 
-        if (_managerClient != null)
+        _channels.Clear();
+
+        if (_managerClient is not null)
         {
             await _managerClient.DisconnectAsync();
             _managerClient.Dispose();

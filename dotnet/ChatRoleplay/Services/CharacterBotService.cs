@@ -1,13 +1,15 @@
 using ChatRoleplay.Models;
 using DSharpPlus;
 using DSharpPlus.Entities;
+using DSharpPlus.EventArgs;
 using Microsoft.Extensions.Logging;
 
 namespace ChatRoleplay.Services;
 
 /// <summary>
-/// Manages one Discord client per character bot.
-/// Each character has its own bot token and appears as a real server member.
+/// Manages one <see cref="DiscordClient"/> per character bot.
+/// Each character has its own Discord bot token and appears as a real server member.
+/// Uses the DSharpPlus 5.x API.
 /// </summary>
 public class CharacterBotService : IAsyncDisposable
 {
@@ -20,7 +22,7 @@ public class CharacterBotService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Starts (connects) a Discord client for every character that has a valid bot token.
+    /// Creates and connects a <see cref="DiscordClient"/> for every character that has a valid bot token.
     /// </summary>
     public async Task StartAllAsync(List<Character> characters, CancellationToken cancellationToken)
     {
@@ -35,24 +37,20 @@ public class CharacterBotService : IAsyncDisposable
 
             try
             {
-                var config = new DiscordConfiguration
-                {
-                    Token = character.BotToken,
-                    TokenType = TokenType.Bot,
-                    Intents = DiscordIntents.Guilds | DiscordIntents.GuildMessages,
-                    MinimumLogLevel = Microsoft.Extensions.Logging.LogLevel.Warning,
-                };
-
-                var client = new DiscordClient(config);
+                var clientBuilder = DiscordClientBuilder
+                    .CreateDefault(character.BotToken, DiscordIntents.Guilds | DiscordIntents.GuildMessages);
 
                 var name = character.Name; // capture for closure
-                client.Ready += (_, _) =>
-                {
-                    _logger.LogInformation("Character bot ready: {Name}", name);
-                    return Task.CompletedTask;
-                };
+                clientBuilder.ConfigureEventHandlers(b =>
+                    b.HandleSessionCreated(_ =>
+                    {
+                        _logger.LogInformation("Character bot ready: {Name}", name);
+                        return Task.CompletedTask;
+                    }));
 
+                var client = clientBuilder.Build();
                 await client.ConnectAsync();
+
                 _clients[character.Name] = client;
                 _logger.LogInformation("Connected character bot: {Name}", character.Name);
             }
@@ -64,7 +62,7 @@ public class CharacterBotService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sends a message as the specified character in the given channel.
+    /// Sends a plain message as the specified character in the given channel.
     /// </summary>
     public async Task SendAsCharacterAsync(
         string characterName,
@@ -125,7 +123,7 @@ public class CharacterBotService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Shows a typing indicator in the channel as the specified character.
+    /// Triggers a typing indicator in the channel as the specified character.
     /// </summary>
     public async Task TriggerTypingAsync(string characterName, ulong channelId)
     {
@@ -144,7 +142,7 @@ public class CharacterBotService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns whether a client exists for the given character name.
+    /// Returns <see langword="true"/> when a live client exists for <paramref name="characterName"/>.
     /// </summary>
     public bool HasCharacter(string characterName) =>
         _clients.ContainsKey(characterName);
@@ -163,6 +161,7 @@ public class CharacterBotService : IAsyncDisposable
                 _logger.LogDebug(ex, "Error disconnecting character bot {Name}", name);
             }
         }
+
         _clients.Clear();
     }
 }

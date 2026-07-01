@@ -1,6 +1,6 @@
 # Chat-Roleplay (.NET Edition)
 
-A complete .NET reimplementation of the Chat-Roleplay Discord bot, written in C# using [DSharpPlus](https://dsharpplus.github.io/).  
+A complete .NET 10 reimplementation of the Chat-Roleplay Discord bot, written in C# using [DSharpPlus 5.x](https://dsharpplus.github.io/).  
 It is **feature-compatible** with the original TypeScript/Node.js application and lives in the `dotnet/` subfolder so it doesn't interfere with the existing project.
 
 ## Features
@@ -19,7 +19,7 @@ It is **feature-compatible** with the original TypeScript/Node.js application an
 
 ### Prerequisites
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download) (or .NET 10 when available)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - One Discord bot application per character **plus** one manager bot  
   (see [Setup in Discord Developer Portal](#setup-in-discord-developer-portal))
 
@@ -160,4 +160,4 @@ dotnet/
 | Hosting | Plain Node process | `Microsoft.Extensions.Hosting` |
 | Logging | `console.log` | `Microsoft.Extensions.Logging` |
 | Idle timer | `setTimeout` | `System.Threading.Timer` |
-| Container | `node:22` | `mcr.microsoft.com/dotnet/runtime:9.0` |
+| Container | `node:22` | `mcr.microsoft.com/dotnet/runtime:10.0` |
