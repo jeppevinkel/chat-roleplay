@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  chat-roleplay-dotnet:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    volumes:
+      # Map a local folder to /app/data so you can edit the config files
+      - ./chat-roleplay-data:/app/data
+    environment:
+      - DOTNET_ENVIRONMENT=Production

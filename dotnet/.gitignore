@@ -1,0 +1,28 @@
+## .NET gitignore
+
+# Build outputs
+bin/
+obj/
+out/
+
+# NuGet
+*.nupkg
+.nuget/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docobj
+
+# VS Code / Rider
+.vs/
+.idea/
+*.DotSettings.user
+
+# Runtime data directory (contains tokens – never commit)
+chat-roleplay-data/
+**/data/
+
+# Publish output
+publish/
